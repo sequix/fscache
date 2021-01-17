@@ -5,7 +5,7 @@
 
 # fscache
 
-A filesystem cache in golang.
+A filesystem LRU cache in golang based on atime.
 
 ## Features
 
