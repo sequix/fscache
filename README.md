@@ -17,7 +17,6 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"time"
 
 	"github.com/sequix/fscache"
@@ -48,7 +47,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(valFromCache)
+	fmt.Println(string(valFromCache))
 }
 ```
 
