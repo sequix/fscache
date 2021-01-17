@@ -22,7 +22,7 @@ jobs:
         run: |
           GOOS=linux go build
       - name: Publish coverage
-        uses: codecov/codecov-action@v1.0.6
+        uses: codecov/codecov-action@v1
         with:
-          token: ${{secrets.CODECOV_TOKEN}}
+          token: ${{ secrets.CODECOV_TOKEN }}
           file: ./coverage.txt
