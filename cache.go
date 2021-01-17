@@ -1,197 +1,184 @@
 package fscache
 
 import (
-	"bytes"
 	"container/heap"
 	"errors"
-	"io"
 	"io/ioutil"
+	"log"
+	"math"
 	"os"
 	"path/filepath"
-	"sync"
-	"syscall"
 	"time"
-
-	"github.com/gofrs/flock"
 )
 
-// TODO: doc; readme; test
-
+// Interface provides a set of general cache functions.
 type Interface interface {
-	Set(key string, src io.Reader) error
-	Get(key string, dst io.Writer) error
+	// Set sets the value of key as src.
+	// Setting the same key multiple times, the last set call takes effect.
+	Set(key string, src []byte) error
+	// Get gets the value of key to dst, and returns dst no matter whether or not there is an error.
+	Get(key string, dst []byte) ([]byte, error)
+	// Has tells you if a key has been set or not.
 	Has(key string) bool
-	Del(key string)
-	SetBytes(key string, src []byte) error
-	GetBytes(key string, dst []byte) ([]byte, error)
 }
 
 var (
 	ErrNotFound = errors.New("not found")
 )
 
-// FsCache is a LRU filesystem cache.
-type FsCache struct {
+// Cache is a LRU filesystem cache based on atime.
+type Cache struct {
 	cacheDir   string
 	maxBytes   int64
-	curBytes   int64
 	gcInterval time.Duration
+	logger     Logger
 	fih        fileInfoHeap
-	fihMu      sync.RWMutex
 	gcStopCh   <-chan struct{}
-	gcFlock    *flock.Flock
 }
 
+func (f *Cache) filedir() string            { return filepath.Join(f.cacheDir, "cache") }
+func (f *Cache) tmpdir() string             { return filepath.Join(f.cacheDir, "tmp") }
+func (f *Cache) filepath(key string) string { return filepath.Join(f.filedir(), key) }
+func (f *Cache) tmppath(key string) string  { return filepath.Join(f.tmpdir(), key) }
+
+// Option can be passed to New() to tailor your needs.
+type Option func(fc *Cache)
+
+// WithCacheDir specifies where the cache holds.
+func WithCacheDir(cacheDir string) Option        { return func(fc *Cache) { fc.cacheDir = cacheDir } }
+
+// WithMaxBytes specifies how many space the cache could take up.
+func WithMaxBytes(bytes int64) Option            { return func(fc *Cache) { fc.maxBytes = bytes } }
+
+// WithGcStopCh receives a channel, when the channel close, gc will stop.
+// By default, gc will not stop until the process exits.
+func WithGcStopCh(stopCh <-chan struct{}) Option { return func(fc *Cache) { fc.gcStopCh = stopCh } }
+
+// WithGcInterval specifies how often the GC performs.
+func WithGcInterval(interval time.Duration) Option {
+	return func(fc *Cache) { fc.gcInterval = interval }
+}
+
+// Logger used by this package.
+type Logger interface {
+	Errorf(fmt string, args ...interface{})
+}
+
+type logger struct {
+	log.Logger
+}
+
+func (l *logger) Errorf(fmt string, args ...interface{}) { log.Printf(fmt, args...) }
+
 func New(opts ...Option) (Interface, error) {
-	fc := &FsCache{
+	fc := &Cache{
 		cacheDir:   os.TempDir(),
+		maxBytes:   math.MaxInt64,
 		gcInterval: 5 * time.Minute,
+		logger:     &logger{},
+		gcStopCh:   make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(fc)
 	}
-	if err := fc.init(); err != nil {
+	if err := os.MkdirAll(fc.filedir(), 0775); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(fc.tmpdir(), 0775); err != nil {
 		return nil, err
 	}
 	if fc.maxBytes > 0 {
-		fc.gcFlock = flock.New(filepath.Join(fc.cacheDir, "gc.lock"))
 		go fc.gcRunner()
 	}
 	return fc, nil
 }
 
-func (fc *FsCache) init() error {
-	return filepath.Walk(filepath.Join(fc.cacheDir, "cache"), func(path string, info os.FileInfo, err error) error {
+func (f *Cache) gcRunner() {
+	ticker := time.NewTicker(f.gcInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-f.gcStopCh:
+			return
+		case <-ticker.C:
+			f.gc()
+		}
+	}
+}
+
+func (f *Cache) gc() {
+	curBytes := int64(0)
+	f.fih = nil
+
+	err := filepath.Walk(f.filedir(), func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		fc.curBytes += info.Size()
-		heap.Push(&fc.fih, info)
+		if info.IsDir() {
+			return nil
+		}
+		curBytes += info.Size()
+		heap.Push(&f.fih, info)
 		return nil
 	})
-}
-
-func (fc *FsCache) gcRunner() {
-	for {
-		select {
-		case <-fc.gcStopCh:
-			return
-		case <-time.After(fc.gcInterval):
-			fc.gc()
-		}
-	}
-}
-
-func (fc *FsCache) gc() {
-	locked, err := fc.gcFlock.TryLock()
-	if err != nil || !locked {
+	if err != nil {
+		f.logger.Errorf("gc walk dir %s : %s", f.filedir(), err)
 		return
 	}
-	defer fc.gcFlock.Unlock()
 
-	fc.fihMu.Lock()
-	defer fc.fihMu.Unlock()
-
-	if fc.curBytes <= fc.maxBytes {
+	if curBytes <= f.maxBytes {
 		return
 	}
 
 	var (
-		needGcBytes = fc.curBytes - fc.maxBytes
+		needGcBytes = curBytes - f.maxBytes
 		bytesSoFar  int64
 		keysToGc    []string
 	)
 
 	for bytesSoFar < needGcBytes {
-		fi := heap.Pop(&fc.fih).(os.FileInfo)
+		fi := heap.Pop(&f.fih).(os.FileInfo)
 		bytesSoFar += fi.Size()
 		keysToGc = append(keysToGc, fi.Name())
 	}
 
 	for _, k := range keysToGc {
-		if err := os.Remove(fc.filepath(k)); err != nil {
+		fp := f.filepath(k)
+		if err := os.Remove(fp); err != nil {
+			f.logger.Errorf("gc %s : %s", fp, err)
 			return
 		}
 	}
-	fc.curBytes -= bytesSoFar
 }
 
-type Option func(fc *FsCache)
-
-func WithCacheDir(cacheDir string) Option {
-	return func(fc *FsCache) {
-		fc.cacheDir = cacheDir
-	}
-}
-
-func WithMaxBytes(bytes int64) Option {
-	return func(fc *FsCache) {
-		fc.maxBytes = bytes
-	}
-}
-
-func WithGcInterval(interval time.Duration) Option {
-	return func(fc *FsCache) {
-		fc.gcInterval = interval
-	}
-}
-
-func WithGcStopCh(stopCh <-chan struct{}) Option {
-	return func(fc *FsCache) {
-		fc.gcStopCh = stopCh
-	}
-}
-
-func (f *FsCache) filepath(key string) string {
-	return filepath.Join(f.cacheDir, "cache", key)
-}
-
-func (f *FsCache) tmppath(key string) string {
-	return filepath.Join(f.cacheDir, "tmp", key)
-}
-
-// TODO update curBytes
-func (f *FsCache) Set(key string, src io.Reader) error {
+// Set implements Interface.Set().
+func (f *Cache) Set(key string, src []byte) error {
 	return atomicWriteFile(f.filepath(key), f.tmppath(key), src, 0644)
 }
 
-func (f *FsCache) SetBytes(key string, src []byte) error {
-	srcReader := bytes.NewReader(src)
-	return atomicWriteFile(f.filepath(key), f.tmppath(key), srcReader, 0644)
-}
-
-func (f *FsCache) Get(key string, dst io.Writer) error {
-	src, err := os.Open(f.filepath(key))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ErrNotFound
-		}
-		return err
-	}
-	defer src.Close()
-	if _, err := io.Copy(dst, src); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (f *FsCache) GetBytes(key string, dst []byte) ([]byte, error) {
-	src, err := ioutil.ReadFile(f.filepath(key))
+// Get implements Interface.Get().
+func (f *Cache) Get(key string, dst []byte) ([]byte, error) {
+	fp := f.filepath(key)
+	src, err := ioutil.ReadFile(fp)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return dst, ErrNotFound
 		}
 		return dst, err
 	}
+	fi, err := os.Stat(fp)
+	if err != nil {
+		return dst, err
+	}
+	if err := os.Chtimes(fp, time.Now(), fi.ModTime()); err != nil {
+		return dst, err
+	}
 	dst = append(dst, src...)
 	return dst, nil
 }
 
-func (f *FsCache) Has(key string) bool {
+// Has implements Interface.Has().
+func (f *Cache) Has(key string) bool {
 	_, err := os.Stat(f.filepath(key))
 	return err == nil
-}
-
-func (f *FsCache) Del(key string) {
-	syscall.Unlink(f.filepath(key))
 }

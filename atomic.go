@@ -1,6 +1,7 @@
 package fscache
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,13 +10,14 @@ import (
 )
 
 // atomicWriteFile atomically writes data to a file named by filename.
-func atomicWriteFile(filename, tmpfile string, src io.Reader, perm os.FileMode) error {
+func atomicWriteFile(filename, tmpfile string, src []byte, perm os.FileMode) error {
 	dst, err := newAtomicFileWriter(filename, tmpfile, perm)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.(*atomicFileWriter).writeErr = err
+	if written, err := dst.Write(src); err != nil || written != len(src) {
+		dst.(*atomicFileWriter).writeErr = fmt.Errorf("atomic write file %s with tmpfile %s, "+
+			"err %s, srcBytes %d, writtenBytes %d", filename, tmpfile, err, len(src), written)
 	}
 	return dst.Close()
 }
