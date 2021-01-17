@@ -1,7 +1,7 @@
 [![Build Status](https://github.com/sequix/fscache/workflows/main/badge.svg)](https://github.com/sequix/fscache/actions)
 [![Go Reference](https://pkg.go.dev/badge/github.com/sequix/fscache.svg)](https://pkg.go.dev/github.com/sequix/fscache)
 [![Go Report](https://goreportcard.com/badge/github.com/sequix/fscache)](https://goreportcard.com/report/github.com/sequix/fscache)
-[![codecov](https://codecov.io/gh/sequix/fscache/branch/master/graph/badge.svg)](https://codecov.io/gh/sequix/fscache)
+[![codecov](https://codecov.io/gh/sequix/fscache/branch/main/graph/badge.svg)](https://codecov.io/gh/sequix/fscache)
 
 # fscache
 
