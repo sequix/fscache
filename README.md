@@ -1,3 +1,6 @@
+[![GoDoc](https://godoc.org/github.com/sequix/fscache?status.svg)](http://godoc.org/github.com/sequix/fscache)
+[![Go Report](https://goreportcard.com/badge/github.com/sequix/fscache)](https://goreportcard.com/report/github.com/sequix/fscache)
+
 # fscache
 
 A filesystem cache in golang.

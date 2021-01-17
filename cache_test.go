@@ -101,7 +101,7 @@ func TestGc(t *testing.T) {
 	defer cancel()
 
 	cm := map[string][]byte{
-		"key1": randBytes(3*1024),
+		"key1": randBytes(3 * 1024),
 		"key2": randBytes(1024),
 		"key3": randBytes(1024),
 	}

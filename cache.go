@@ -23,6 +23,7 @@ type Interface interface {
 }
 
 var (
+	// ErrNotFound will be returned when getting a key that not setting before.
 	ErrNotFound = errors.New("not found")
 )
 
@@ -45,10 +46,10 @@ func (f *Cache) tmppath(key string) string  { return filepath.Join(f.tmpdir(), k
 type Option func(fc *Cache)
 
 // WithCacheDir specifies where the cache holds.
-func WithCacheDir(cacheDir string) Option        { return func(fc *Cache) { fc.cacheDir = cacheDir } }
+func WithCacheDir(cacheDir string) Option { return func(fc *Cache) { fc.cacheDir = cacheDir } }
 
 // WithMaxBytes specifies how many space the cache could take up.
-func WithMaxBytes(bytes int64) Option            { return func(fc *Cache) { fc.maxBytes = bytes } }
+func WithMaxBytes(bytes int64) Option { return func(fc *Cache) { fc.maxBytes = bytes } }
 
 // WithGcStopCh receives a channel, when the channel close, gc will stop.
 // By default, gc will not stop until the process exits.
@@ -70,6 +71,7 @@ type logger struct {
 
 func (l *logger) Errorf(fmt string, args ...interface{}) { log.Printf(fmt, args...) }
 
+// New creates a LRU filesystem cache based on atime, and starts the GC goroutine.
 func New(opts ...Option) (Interface, error) {
 	fc := &Cache{
 		cacheDir:   os.TempDir(),
